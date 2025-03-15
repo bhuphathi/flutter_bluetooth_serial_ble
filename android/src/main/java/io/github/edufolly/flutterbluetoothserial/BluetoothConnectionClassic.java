@@ -6,14 +6,17 @@ import java.io.OutputStream;
 import java.util.UUID;
 import java.util.Arrays;
 import java.util.function.Consumer;
+import java.lang.reflect.Method;
 
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothSocket;
+import android.util.Log;
 
 /// Universal Bluetooth serial connection class (for Java)
 public class BluetoothConnectionClassic extends BluetoothConnectionBase
 {
+    private static final String TAG = "FlutterBluePlugin";
     protected static final UUID DEFAULT_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
 
     protected BluetoothAdapter bluetoothAdapter;
@@ -96,7 +99,12 @@ public class BluetoothConnectionClassic extends BluetoothConnectionBase
         private final InputStream input;
         private final OutputStream output;
         private boolean requestedClosing = false;
-        
+
+        private final long KEEP_ALIVE_INTERVAL = 100; // milliseconds
+        private final byte[] KEEP_ALIVE_SIGNAL = new byte[]{0x00};
+        private Thread keepAliveThread;
+        private volatile boolean keepAliveRunning = true;
+
         ConnectionThread(BluetoothSocket socket) {
             this.socket = socket;
             InputStream tmpIn = null;
@@ -111,6 +119,29 @@ public class BluetoothConnectionClassic extends BluetoothConnectionBase
 
             this.input = tmpIn;
             this.output = tmpOut;
+
+            // Start keep-alive thread
+            startKeepAliveThread();
+        }
+
+        private void startKeepAliveThread() {
+            keepAliveThread = new Thread(() -> {
+                while (keepAliveRunning && !requestedClosing) {
+                    try {
+                        Thread.sleep(KEEP_ALIVE_INTERVAL);
+                        if (!requestedClosing) {
+                            output.write(KEEP_ALIVE_SIGNAL);
+                            output.flush();
+                        }
+                    } catch (Exception e) {
+                        if (!requestedClosing) {
+                            Log.e(TAG, "Keep-alive failed: " + e.getMessage());
+                        }
+                    }
+                }
+            });
+            keepAliveThread.setDaemon(true);
+            keepAliveThread.start();
         }
 
         /// Thread main code
@@ -120,9 +151,20 @@ public class BluetoothConnectionClassic extends BluetoothConnectionBase
 
             while (!requestedClosing) {
                 try {
-                    bytes = input.read(buffer);
-
-                    onRead(Arrays.copyOf(buffer, bytes));
+                    // Check if data is available first
+                    if (input.available() > 0) {
+                        bytes = input.read(buffer);
+                        if (bytes > 0) {
+                            onRead(Arrays.copyOf(buffer, bytes));
+                        }
+                    } else {
+                        // Short sleep to prevent CPU hogging
+                        try {
+                            Thread.sleep(1); // Minimal sleep
+                        } catch (InterruptedException ie) {
+                            Log.e(TAG, "InterruptedException: " + ie.getMessage());
+                        }
+                    }
                 } catch (IOException e) {
                     // `input.read` throws when closed by remote device
                     break;
@@ -166,9 +208,16 @@ public class BluetoothConnectionClassic extends BluetoothConnectionBase
             if (requestedClosing) {
                 return;
             }
+
+            // Stop keep-alive thread
+            keepAliveRunning = false;
+            if (keepAliveThread != null) {
+                keepAliveThread.interrupt();
+            }
+
             requestedClosing = true;
 
-            // Flush output buffers befoce closing
+            // Flush output buffers before closing
             try {
                 output.flush();
             }
