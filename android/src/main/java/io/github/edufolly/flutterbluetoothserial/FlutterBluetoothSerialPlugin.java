@@ -22,6 +22,7 @@ import android.os.AsyncTask;
 
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -980,6 +981,8 @@ public class FlutterBluetoothSerialPlugin implements FlutterPlugin, ActivityAwar
                         public void onRead(byte[] data) {
                             activity.runOnUiThread(() -> {
                                 if (readSink[0] != null) {
+                                    // Log.d(TAG, "onRead: " + Arrays.toString(data));
+
                                     readSink[0].success(data);
                                 }
                             });
